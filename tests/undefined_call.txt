@@ -1,0 +1,3 @@
+func main
+call bar x
+func_end

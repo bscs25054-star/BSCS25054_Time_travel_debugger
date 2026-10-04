@@ -1,0 +1,2 @@
+func main
+set k 10

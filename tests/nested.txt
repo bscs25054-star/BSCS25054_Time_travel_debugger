@@ -1,0 +1,4 @@
+func main
+func foo
+func_end
+func_end

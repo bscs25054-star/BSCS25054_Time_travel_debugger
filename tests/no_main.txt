@@ -1,0 +1,3 @@
+func foo a
+set a 1
+func_end
