@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <cstdint>
+#include <cctype>
 #include <cstdio>
 using namespace std;
 
@@ -45,29 +46,64 @@ class Stack
 public:
     // Implement these functions:
     Stack()
-    { // initialize the stack
+    { top = nullptr;
+      count = 0;
+    }
+    ~Stack() {
+        while (top != nullptr){
+            Node *old = top;
+            top = top->next;
+            delete old;
+        }
     }
     void push(const T &val)
     {
-
+      if(count >= MAX_STACK_DEPTH){
+        return;
+      }
+      Node* newval = new Node{val,top};
+      top = newval;
+      count++;
         // pushes the value on the stack if max limit is not reached yet.
     }
     T pop()
     {
+        if(isEmpty()){
+            return T();
+        }
+        Node* oldptr = top;
+        T val = oldptr->data;
+        top = oldptr->next;
+        delete oldptr;
+        count--;
+        return val;
         // pop the top value on the stack
     }
     T &peek()
     {
+        if(isEmpty()){
+             static T empty = T();
+             return empty;
+        }
+        return top->data;
         // returns the top value on the stack
     }
     bool isEmpty()
     {
+        return top == nullptr;
     }
     int32_t depth()
     {
+        return count;
     }
     int32_t snapshot_into(T out[], int32_t maxLen)
     {
+        int32_t written = 0;
+        for(Node* currentptr = top; currentptr != nullptr && written < maxLen; currentptr = currentptr->next){
+            out[written] = currentptr->data;
+            written++;
+        }
+        return written;
         // copies every frame, top to bottom in the array given as a parameter
         // this is what buildSnapshot() call, returns count written
     }
@@ -151,23 +187,97 @@ struct PendingPatch
     string targetFuncName;
 };
 
-
-
+static bool spaceseperatedword(const string &s, size_t&pos, string &out){
+    size_t ind = s.size();
+    while (pos < ind && isspace((unsigned char)s[pos]))
+        pos++;
+    if (pos >= ind )
+        return false;
+    size_t start = pos;
+    while (pos < ind && !isspace((unsigned char)s[pos]))
+        pos++;
+    out = s.substr(start, pos - start);
+    return true;
+}
 // PASS 0x0: READING source.bin + VALIDITY CHECK
 bool readSourceLine(ifstream &in, string &out)
 {
+    string currentline;
+    while(getline(in, currentline)){
+        if(!currentline.empty() && currentline.back() == '\ r'){
+            currentline.pop_back();
+        }
+        if(currentline.find_first_not_of("\t") == string::npos)  {
+            continue;
+        } 
+        out = currentline;
+        return true;
+    }
+    return false;
     // reads the next nonblank line
 }
 string firstWord(const string &line)
 {
+    size_t pos = 0;
+    string w;
+    if (spaceseperatedword(line, pos, w)){
+        return w;
+    }
+    return "";
     // returns first word from the input string
 }
 string secondWord(const string &line)
-{
+{   
+     size_t pos = 0;
+    string w;
+    if (!spaceseperatedword(line, pos, w)){
+        return "";
+    }
+    if (spaceseperatedword(line, pos, w)){
+        return w;
+    }
+    return "";
     // returns the second word
 }
 bool validateProgram(const char *sourcePath)
 {
+    ifstream in(sourcePath);
+    if (!in) {
+        cerr << "Validation error: cannot open " << sourcePath << endl;
+        return false;
+    }
+    Stack<int32_t> openfunctions;
+    string currentline;
+    int32_t instrNo = 0;
+    while (readSourceLine(in, currentline)){
+        instrNo++;
+        string kw = firstWord(currentline);
+        if (kw == "func") {
+            if (secondWord(currentline).empty()){
+                cerr << "Validation error: instruction " << instrNo << ": 'func' needs a function name" << endl;
+                return false;
+            }
+            if (!openfunctions.isEmpty()){
+                cerr << "Validation error: instruction " << instrNo << ": nested func (the func from instruction "
+                     << openfunctions.peek() << " is still open)" << endl;
+                return false;
+            }
+            openfunctions.push(instrNo);
+        }
+        else if (kw == "func_end") {
+            if (openfunctions.isEmpty())
+            {
+                cerr << "Validation error: instruction " << instrNo << ": func_end without a matching func" << endl;
+                return false;
+            }
+            openfunctions.pop();
+        }
+    }
+    if (!openfunctions.isEmpty()) {
+        cerr << "Validation error: the func at instruction " << openfunctions.peek() << " is never closed with func_end" << endl;
+        return false;
+    }
+    return true;
     // for each func defined there should be exactly one func_end and no nested funcs allowed - 
 }
 
@@ -249,12 +359,11 @@ int32_t main()
         return 1;
     }
 
-    int64_t mainOffset = resolveProgram("source.bin", "resolve.bin");
+    //int64_t mainOffset = resolveProgram("source.bin", "resolve.bin");
 
-    Timeline timeline;
-    executeProgram("resolve.bin", mainOffset, timeline);
+    //Timeline timeline;
+    //executeProgram("resolve.bin", mainOffset, timeline);
 
-    writeTdbg(timeline, "session.tdbg");
-
+    //writeTdbg(timeline, "session.tdbg");
     return 0;
 }
