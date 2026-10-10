@@ -204,7 +204,7 @@ bool readSourceLine(ifstream &in, string &out)
 {
     string currentline;
     while(getline(in, currentline)){
-        if(!currentline.empty() && currentline.back() == '\ r'){
+        if(!currentline.empty() && currentline.back() == '\r'){
             currentline.pop_back();
         }
         if(currentline.find_first_not_of("\t") == string::npos)  {
@@ -284,19 +284,135 @@ bool validateProgram(const char *sourcePath)
 // PASS 0x1: RESOLVE() -> resolve.bin
 int64_t writeResolveRecord(FILE *f, int64_t offsetField, const string &text)
 {
+    int64_t startcurs = ftell(f);
+    int32_t txtsize = (int32_t)text.size();
+    if((fwrite(&offsetField, sizeof(int64_t), 1, f) != 1)){
+        return -1;
+    }
+    if((fwrite(&txtsize, sizeof(int32_t), 1, f) != 1)){
+        return -1;
+    }
+    if(( txtsize < 0 || fwrite(text.data(), 1, size_t(txtsize), f) != size_t(txtsize))){
+        return -1;
+    }
+    return startcurs;
     // writes one [offset(8B)][size(4B)][string] record at the current file position
     // returns this record's own starting byte position
 }
 int64_t readResolveRecord(FILE *f, string &outText)
 {
+    int64_t startoffset;
+    int32_t size;
+    if((fread(&startoffset, sizeof(int64_t), 1, f) != 1)){ // has offset been read properly
+        return -1;
+    }
+    if((fread(&size, sizeof(int32_t), 1, f) != 1)){ // has size been read properly
+        return -1;
+    }
+    if( size < 0 || size > MAX_SOURCE_BYTES){  //making sure string is not bigger than a certain length
+        return -1;
+    }
+    outText.resize(size);
+    if(( size < 0 || fread(&outText[0], 1, size_t(size), f) != size_t(size))){ //making sure text has been read
+        return -1;
+    }
+    return startoffset;
     // reads one record at the current position and advances past it, returns the offset field - the raw line text comes back untouched in outText.
 }
+static int32_t findFunc(FuncEntry funcs[], int32_t count, const string &name)
+{
+    for (int32_t i = 0; i < count; i++)
+        if (funcs[i].funcName == name)
+            return i;
+    return -1;
+}
+
+
 int64_t resolveProgram(const char *sourcePath, const char *resolveBinPath)
 {
     FuncEntry funcArray[MAX_FUNCS];
     int32_t funcCount = 0;
     PendingPatch patches[MAX_PATCHES];
     int32_t patchCount = 0;
+    cerr << "C: resolveProgram started" << endl;
+    ifstream filereader(sourcePath);
+    if(!filereader){
+        cerr << "err, could not open file"<< endl;
+        return -1;
+    }
+
+    FILE* Resolve = fopen(resolveBinPath, "w+b");
+      cerr << "D: resolve.bin opened" << endl;
+    if(!Resolve){
+        cerr << "error, could not open file" << endl;
+        return -1;
+    }
+
+    string currentline;
+    while(readSourceLine(filereader, currentline)){
+        string firstword = firstWord(currentline);
+        int64_t here = ftell(Resolve);
+        int64_t recordpos = writeResolveRecord(Resolve,here, currentline);
+        if (recordpos < 0){
+            cerr << "error: failed writing " << resolveBinPath << endl;
+            fclose(Resolve);
+            return -1;
+        }
+        if(firstword == "func"){
+            string second = secondWord(currentline);
+            if(findFunc(funcArray,funcCount,second) >= 0){
+                cerr <<  "error function " << second << " defined more than once" << endl;
+                fclose(Resolve);
+                return -1;
+            }
+            if(funcCount >= MAX_FUNCS){
+                cerr <<  "too many functions defined, limit reached" << endl;
+                fclose(Resolve);
+                return -1;
+            }
+            funcArray[funcCount].funcName = second;
+            funcArray[funcCount].byteOffsetInResolveBin = recordpos;
+            funcCount++;
+        }
+        if(firstword == "call") {
+            string targfunc = secondWord(currentline);
+            if(targfunc.empty()){
+                cerr <<  "call needs a function name, cannot be empty" << endl;
+                fclose(Resolve);
+                return -1;
+            }
+            if(patchCount >= MAX_PATCHES){
+                cout <<  "too many functions call instructions" << endl;
+                fclose(Resolve);
+                return -1;
+            }
+            patches[patchCount].byteOffsetOfOffsetField = recordpos;
+            patches[patchCount].targetFuncName = targfunc;
+            patchCount++;
+        }
+    }
+    int32_t mainpos =findFunc(funcArray,funcCount, "main");
+    if(mainpos < 0){
+        cerr << "error, program has no main function" << endl;
+        fclose(Resolve);
+        return -1;
+    }
+    for (int32_t i = 0; i < patchCount; i++)
+    {
+        int32_t idx = findFunc(funcArray, funcCount, patches[i].targetFuncName);
+        if (idx < 0)
+        {
+            cerr << "Resolve error: call to undefined function '" << patches[i].targetFuncName << "'" << endl;
+            fclose(Resolve);
+            return -1;
+        }
+        int64_t target = funcArray[idx].byteOffsetInResolveBin;
+        fseek(Resolve, (long)patches[i].byteOffsetOfOffsetField, SEEK_SET);
+        fwrite(&target, sizeof(int64_t), 1, Resolve);
+    }
+    fclose(Resolve);
+     cerr << "E: resolve finished" << endl;
+    return funcArray[mainpos].byteOffsetInResolveBin;
     // Every source line becomes one record holding the raw line, as-is.
     // resolve() only PEEKS at the leading word(s) -- enough to spot FUNC
     // (remember its position) and CALL (remember which function it needs
@@ -350,20 +466,32 @@ void writeTdbg(Timeline &timeline, const char *tdbgPath)
     // update the header
 }
 // main section
-int32_t main()
-{
 
+// /home/nashwa_khan/server.cpp
+int32_t main(){
+    cerr << "TEST 123" << endl;
+    cerr << "A: main started" << endl;
     if (!validateProgram("source.bin"))
     {
-        // send an error response instead of a .tdbg file
         return 1;
     }
+     cerr << "B: validation passed" << endl;
+    int64_t mainOffset = resolveProgram("source.bin", "resolve.bin");
+    if (mainOffset < 0)
+    {
+        return 1;
+    }
+    cout << "main is at byte " << mainOffset << endl;
 
-    //int64_t mainOffset = resolveProgram("source.bin", "resolve.bin");
-
-    //Timeline timeline;
-    //executeProgram("resolve.bin", mainOffset, timeline);
-
-    //writeTdbg(timeline, "session.tdbg");
+    FILE *f = fopen("resolve.bin", "rb");
+    string text;
+    int64_t start = ftell(f);
+    int64_t off;
+    while ((off = readResolveRecord(f, text)) >= 0)
+    {
+        cout << "start " << start << " | offset field " << off << " | " << text << endl;
+        start = ftell(f);
+    }
+    fclose(f);
     return 0;
 }
