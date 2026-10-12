@@ -9,7 +9,7 @@
 
 
 #include <iostream>
-#include <string>
+#include <cstring>
 #include <cstdint>
 #include <fstream>
 #include <unistd.h>
@@ -144,6 +144,7 @@ public:
         }
         tail->next = newrecord;
         tail = tail->next;
+        stepCount++;
     }
     TimelineNode *begin()
     {
@@ -154,6 +155,17 @@ public:
         return stepCount;
     }
 };
+Timeline::~Timeline()
+{
+    TimelineNode *cur = head;
+    while (cur != nullptr)
+    {
+        TimelineNode *next = cur->next;  
+        delete cur->data;                 
+        delete cur;                       
+        cur = next;
+    }
+}
 
 // Core structs
 struct Variable
@@ -186,7 +198,8 @@ void writeHeader(FILE *f, const TTDBHeader &h)
 {
     fwrite(h.magic, 1, 4, f);
     fwrite(&h.version, sizeof(int32_t), 1, f);
-
+    fwrite(&h.stepCount,sizeof(int32_t), 1, f);
+    fwrite(&h.indexOffset, sizeof(int64_t), 1, f);
     // placeholder for other two data members
 }
 
@@ -530,10 +543,10 @@ static bool operationapp(const string &op, int32_t a, int32_t b, int32_t &out, s
     if (op == "add"){
         r = (long long)a + b;
     }
-    if (op == "sub"){
+    else if (op == "sub"){
         r = (long long)a - b;
     }
-    if (op == "mul"){
+    else if (op == "mul"){
         r = (long long)a * b;
     }
     else{
@@ -721,10 +734,62 @@ void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &ti
     // implementation:
     // execute line by line, and according to the keyword perform action
 
-
+static void Writeint32(FILE* f, int32_t y){
+    fwrite(&y,sizeof(int32_t), 1, f);
+}
+static void WriteStr(FILE* f, const string& s){
+    Writeint32(f,(int32_t)s.size());
+    if(!s.empty()){
+        fwrite(s.data(),1, s.size(),f);
+    }
+}
+static void WriteVariables(FILE* f, const Variable vars[], int32_t count){
+    for(int32_t i = 0; i < count; i++){
+        WriteStr(f,vars[i].name);
+        Writeint32(f, vars[i].value);
+    }
+}
+static void write_Snapshot(FILE *f, const Snapshot &s)
+{
+    Writeint32(f, s.stackDepth);
+    for (int32_t i = 0; i < s.stackDepth; i++)
+    {
+        const Frame &fr = s.callStack[i];
+        WriteStr(f, fr.func_name);
+        Writeint32(f, fr.argc);
+        WriteVariables(f, fr.argv, fr.argc);
+        Writeint32(f, fr.returnLine);
+        Writeint32(f, fr.localCount);
+        WriteVariables(f, fr.locals, fr.localCount);
+    }
+}
 // PASS 0x3: SERIALIZE TIMELINE
 void writeTdbg(Timeline &timeline, const char *tdbgPath)
 {
+    FILE* f = fopen(tdbgPath, "w+b");
+    if(!f){
+        cerr << "Could not create file" << endl;
+        return;
+    }
+    TTDBHeader h{};
+    memcpy(h.magic, "TTDB", 4);
+    h.stepCount = timeline.getStepCount();
+    h.indexOffset = 0;
+    h.version = 1;
+    writeHeader(f, h); 
+    int64_t *startind = new int64_t[h.stepCount > 0 ? h.stepCount : 1];
+    int32_t i = 0;
+    for(TimelineNode* n = timeline.begin(); n != nullptr; n = n->next){
+        startind[i++] = ftell(f);
+        write_Snapshot(f,*n->data);
+    }
+    h.indexOffset = ftell(f);
+    fwrite(startind,sizeof(int64_t),(size_t)h.stepCount,f);
+    delete[] startind;
+
+    fseek(f, 0, SEEK_SET);
+    writeHeader(f, h);
+    fclose(f);
     // placeholder for header
     // index array of the size of stepcount from the timeline
     // placing each snapshot in the file while maintaining the index(starting point of each nth snapshot)
@@ -738,36 +803,12 @@ void writeTdbg(Timeline &timeline, const char *tdbgPath)
 int32_t main()
 {
     if (!validateProgram("source.bin"))
-    {
         return 1;
-    }
-
     int64_t mainOffset = resolveProgram("source.bin", "resolve.bin");
     if (mainOffset < 0)
-    {
         return 1;
-    }
-
     Timeline timeline;
     executeProgram("resolve.bin", mainOffset, timeline);
-    cout << "Recorded " << timeline.getStepCount() << " snapshots" << endl;
-
-    int32_t n = 1;
-    for (TimelineNode *node = timeline.begin(); node != nullptr; node = node->next, n++)
-    {
-        Snapshot *s = node->data;
-        cout << "Snapshot " << n << " (depth " << s->stackDepth << ")" << endl;
-        for (int32_t i = 0; i < s->stackDepth; i++)
-        {
-            Frame &fr = s->callStack[i];
-            cout << "  " << fr.func_name << " | args:";
-            for (int32_t j = 0; j < fr.argc; j++)
-                cout << " " << fr.argv[j].name << "=" << fr.argv[j].value;
-            cout << " | locals:";
-            for (int32_t j = 0; j < fr.localCount; j++)
-                cout << " " << fr.locals[j].name << "=" << fr.locals[j].value;
-            cout << endl;
-        }
-    }
+    writeTdbg(timeline, "session.tdbg");
     return 0;
 }
