@@ -17,9 +17,12 @@
 #include <cstdint>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>   
+#include <cerrno>    
 using namespace std;
 
 // ---- Constants ----
+const int32_t MAX_STEPS = 10000;  
 const int32_t MAX_VARS_PER_FRAME = 16;
 const int32_t MAX_STACK_DEPTH = 64;
 const int32_t MAX_FUNCS = 128;
@@ -127,16 +130,28 @@ public:
     // Implement these functions
     Timeline()
     {
+        head = tail = nullptr;
+        stepCount = 0;
+
     }
     void record(Snapshot *s)
     {
-        // add record in the timeline
+        TimelineNode* newrecord = new TimelineNode{s, nullptr, tail};
+        if( tail == nullptr){
+            head = tail = newrecord;
+            stepCount++;
+            return;
+        }
+        tail->next = newrecord;
+        tail = tail->next;
     }
     TimelineNode *begin()
     {
+        return head;
     }
     int32_t getStepCount()
     {
+        return stepCount;
     }
 };
 
@@ -437,6 +452,26 @@ struct Token
 };
 int32_t tokenizeLine(const string &line, Token tokens[], int32_t maxTokens)
 {
+    int32_t wordcount = 0;
+    size_t cursorpos = 0;
+    string word;
+    while(spaceseperatedword(line,cursorpos,word)){
+        if(wordcount >= maxTokens){ //Too Many Parameters(error)
+            return -1;
+        }
+        tokens[wordcount].text = word;
+        if(wordcount == 0){
+            tokens[wordcount].type = IDENTIFIER;
+        }
+        else if(wordcount == 1){
+             tokens[wordcount].type = KEYWORD;
+        }
+        else{
+             tokens[wordcount].type = PARAM;
+        }
+        wordcount++;
+    }
+    return wordcount;
     // first word is always a instruction keyword
     // instruction set = [func, func_end, call, set, add, sub, mul and div]
     // next word is identifier like name of a function, variable name
@@ -444,17 +479,248 @@ int32_t tokenizeLine(const string &line, Token tokens[], int32_t maxTokens)
 }
 Snapshot *buildSnapshot(Stack<Frame> &callStack)
 {
+    Snapshot* currscreenshot = new Snapshot();
+    currscreenshot->stackDepth = callStack.snapshot_into(currscreenshot->callStack, MAX_STACK_DEPTH);
+    return currscreenshot;
     // build the snapshot based on the callStack given
+}
+static bool IntegerParse(const string &s, int32_t& out){ //Determines if this word is a whole number
+    if(s.empty()){
+        return false;
+    }
+    char* end = nullptr;
+    errno = 0;
+    long long v = strtoll(s.c_str(), &end, 10); 
+    if(*end != '\0' || errno == ERANGE){
+        return false;
+    }
+    if(v < INT32_MIN || v > INT32_MAX){
+        return false;
+    }
+    out = (int32_t)v;
+    return true;
+}
+static Variable *findvariable(Frame &f, const string& name){ //Finds a variable by name inside one frame
+    for(int32_t i = 0; i < f.argc; i++){
+        if(f.argv[i].name == name){
+            return &f.argv[i];
+        }
+    }
+    for(int32_t i = 0; i < f.localCount; i++){
+        if(f.locals[i].name == name){
+            return &f.locals[i];
+        }
+    }
+    return nullptr;
+}
+static bool getValue(Frame &f,const string& tok,int32_t& out, string& err){ // Gets the value of an operand
+    if(IntegerParse(tok, out)){
+        return true;
+    }
+    Variable* v = findvariable(f, tok);
+    if( v == nullptr){
+        err = "unknown variable" + tok + " ";
+        return false;
+    }
+    out = v->value;
+    return true;
+}
+static bool operationapp(const string &op, int32_t a, int32_t b, int32_t &out, string &err){ // does the arithmetic safely in 64 bit operations
+    long long r;
+    if (op == "add"){
+        r = (long long)a + b;
+    }
+    if (op == "sub"){
+        r = (long long)a - b;
+    }
+    if (op == "mul"){
+        r = (long long)a * b;
+    }
+    else{
+        if(b == 0){
+            err = "division by zero";
+            return false;
+        }
+        r = (long long)a / b;
+    }
+    if( r < INT32_MIN || r > INT32_MAX){
+        err = "integer overflow";
+        return false;
+    }
+    out = (int32_t)r;
+    return true;
 }
 void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &timeline)
 {
+    FILE *f = fopen(resolveBinPath, "rb");
+    if(!f){
+        cerr << "Execution error: cannot open" << resolveBinPath << endl;
+    }
+    Stack <Frame> callStack;
+    string argSource[MAX_STACK_DEPTH][MAX_VARS_PER_FRAME];
+    // Push Frame for main
+    string text;
+    if(fseek(f,(long)mainOffset, SEEK_SET) != 0 || readResolveRecord(f, text) < 0){
+        cerr << "Main  not found in this program" << resolveBinPath << endl;
+        fclose(f);
+        return;
+    }
+
+    Frame mainFrame{};
+    mainFrame.func_name = "main";
+    mainFrame.argc = 0;
+    mainFrame.returnLine = -1;
+    mainFrame.localCount = 0;
+    callStack.push(mainFrame);
+    int32_t steps = 0;
+    bool done = false;
+    while(!done){
+        int64_t offsetfield = readResolveRecord(f, text);
+        if(offsetfield < 0){
+            cerr << "error : ran past the end of the program" << endl;
+            break;
+        }
+        Token currtokens[MAX_TOKENS];
+        int32_t n = tokenizeLine(text, currtokens, MAX_TOKENS);
+        if( n < 1){
+            cerr << "Runtime error: too many words" << endl;
+            break;
+        }
+        Frame& curr = callStack.peek();
+        const string& kw = currtokens[0].text;
+        string err;
+        // if kw is a set statement;
+        if(kw == "set"){
+            int32_t tmp, v = 0;
+            if(n != 3){
+                err =  "error: set needs to have exactly 3 words";
+            }
+            else if(IntegerParse(currtokens[1].text,tmp)){
+                err =  "Cannot assign value to a number" ;
+            }
+            else if(getValue(curr, currtokens[2].text,v, err)){
+                Variable* ifexist = findvariable(curr, currtokens[1].text);
+                if(ifexist != nullptr){ //if local variable alr exists, program will overwrite it
+                    ifexist->value = v;
+                }
+                else if(curr.localCount >= MAX_VARS_PER_FRAME){
+                    err = "too many local variables";
+                }
+                else{
+                    curr.locals[curr.localCount].name = currtokens[1].text;
+                    curr.locals[curr.localCount].value = v;
+                    curr.localCount++;
+                }
+            }
+        } //if arithmetic operation is being done
+        else if( kw == "add" || kw == "sub" || kw == "mul" || kw == "div"){
+            int32_t right = 0, result = 0;
+            if(n != 3){
+                err =  kw + " needs 2 operators" ;
+            }
+            else {
+                Variable* ifexist = findvariable(curr, currtokens[1].text);
+                if(ifexist == nullptr){
+                    err = "unknown variable" + currtokens[1].text  + "' ";
+                }
+                else if(getValue(curr,currtokens[2].text,right,err) && operationapp(kw, ifexist->value,right, result,err)){
+                    ifexist->value = result;
+                }
+            }
+        }
+        else if(kw == "call"){
+            if(n < 2){
+                err = "call does not have a function name";
+            }
+            else if(callStack.depth() >= MAX_STACK_DEPTH){
+                err = "call stack overflow(stack more than 64 calls deep)";
+            }
+            else{
+                int32_t nargs = n-2;
+                int64_t returnpos = ftell(f);
+                string Headertext;
+                if(fseek(f,(long)offsetfield, SEEK_SET)!= 0 || readResolveRecord(f, Headertext) < 0){
+                    err = "cannot read function Headertext";
+                }
+                else{
+                    Token hdr[MAX_TOKENS];
+                    int32_t hn = tokenizeLine(Headertext,hdr, MAX_TOKENS);
+                    cerr << "DBG line: [" << text << "] depth=" << callStack.depth() << endl;
+                    if(hn < 2){
+                        err = "bad function header";
+                    }
+                    else if(hn -2 != nargs){
+                         err = "'" + currtokens[1].text + "' expects " + to_string(hn - 2) + " argument(s) but got " + to_string(nargs);
+                    }
+                    else{
+                        Frame callee{};
+                        callee.func_name = currtokens[1].text;
+                        callee.argc = nargs;
+                        callee.returnLine = (int32_t)returnpos;
+                        callee.localCount = 0;
+                        int32_t level = callStack.depth();
+                        for (int32_t i = 0; i < nargs; i++)
+                        {
+                            int32_t v = 0, dummy;
+                            if (!getValue(curr, currtokens[2 + i].text, v, err))
+                                break;
+                            callee.argv[i].name = hdr[2 + i].text;
+                            callee.argv[i].value = v;
+                            argSource[level][i] = IntegerParse(currtokens[2 + i].text, dummy) ? "" : currtokens[2 + i].text;
+                        }
+                        if (err.empty()){
+                            callStack.push(callee);
+                        }
+                    }
+                }
+            }
+        }
+        else if(kw == "func_end"){
+            Frame finished = callStack.pop();
+            if(callStack.isEmpty()){
+                done = true;                       
+            }
+            else{
+                Frame &caller = callStack.peek();
+                int32_t level = callStack.depth(); 
+                for(int32_t i = 0; i < finished.argc; i++){
+                    if(!argSource[level][i].empty()){
+                        Variable *v = findvariable(caller, argSource[level][i]);
+                        if(v != nullptr) v->value = finished.argv[i].value;
+                    }
+                }
+                fseek(f, (long)finished.returnLine, SEEK_SET);   
+            }
+        }
+        else if(kw == "func"){
+            // nothing to do
+        }
+        else{
+            err = "unknown instruction '" + kw + "'";
+        }
+
+        if(!err.empty()){
+            cerr << "Runtime error at step " << steps + 1 << " ('" << text << "'): " << err << endl;
+            break;
+        }
+
+        timeline.record(buildSnapshot(callStack));   // <-- the line you were looking for
+        steps++;
+        if(!done && steps >= MAX_STEPS){
+            cerr << "Stopped: reached the limit of " << MAX_STEPS << " steps" << endl;
+            break;
+        }
+    }   // end of while
+
+    fclose(f);
+}
     // initialize the call stack
     // make the main frame
     // push main frame on the call stack
 
     // implementation:
     // execute line by line, and according to the keyword perform action
-}
+
 
 // PASS 0x3: SERIALIZE TIMELINE
 void writeTdbg(Timeline &timeline, const char *tdbgPath)
@@ -468,30 +734,40 @@ void writeTdbg(Timeline &timeline, const char *tdbgPath)
 // main section
 
 // /home/nashwa_khan/server.cpp
-int32_t main(){
-    cerr << "TEST 123" << endl;
-    cerr << "A: main started" << endl;
+// /home/nashwa_khan/ttdb/server.cpp
+int32_t main()
+{
     if (!validateProgram("source.bin"))
     {
         return 1;
     }
-     cerr << "B: validation passed" << endl;
+
     int64_t mainOffset = resolveProgram("source.bin", "resolve.bin");
     if (mainOffset < 0)
     {
         return 1;
     }
-    cout << "main is at byte " << mainOffset << endl;
 
-    FILE *f = fopen("resolve.bin", "rb");
-    string text;
-    int64_t start = ftell(f);
-    int64_t off;
-    while ((off = readResolveRecord(f, text)) >= 0)
+    Timeline timeline;
+    executeProgram("resolve.bin", mainOffset, timeline);
+    cout << "Recorded " << timeline.getStepCount() << " snapshots" << endl;
+
+    int32_t n = 1;
+    for (TimelineNode *node = timeline.begin(); node != nullptr; node = node->next, n++)
     {
-        cout << "start " << start << " | offset field " << off << " | " << text << endl;
-        start = ftell(f);
+        Snapshot *s = node->data;
+        cout << "Snapshot " << n << " (depth " << s->stackDepth << ")" << endl;
+        for (int32_t i = 0; i < s->stackDepth; i++)
+        {
+            Frame &fr = s->callStack[i];
+            cout << "  " << fr.func_name << " | args:";
+            for (int32_t j = 0; j < fr.argc; j++)
+                cout << " " << fr.argv[j].name << "=" << fr.argv[j].value;
+            cout << " | locals:";
+            for (int32_t j = 0; j < fr.localCount; j++)
+                cout << " " << fr.locals[j].name << "=" << fr.locals[j].value;
+            cout << endl;
+        }
     }
-    fclose(f);
     return 0;
 }
