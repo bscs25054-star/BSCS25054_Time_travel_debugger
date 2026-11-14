@@ -14,3 +14,5 @@ The Final touch. from Dynamic to Static. Stage 4 saves the Dynamic memory alloca
 
 Phase 02
 Added helper.h that includes all helper functions including the checksum functions, the trailer checker that compares the checksum on the reciever side(LoadBalancer). and helper socket functions that will be used to create a TCP connection
+
+Made additional changes in server.cpp that were required. Implemented 4 new functions that used functions already implemented in phase 01. uses the functions in the helper to handle socket connection and checksum computation whilst communicating with loadbalancer
