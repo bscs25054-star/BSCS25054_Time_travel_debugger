@@ -10,3 +10,7 @@ Completed Stage by Implementing WriteResolveRecord, ReadResolveRecord, Resolve P
 Day#4 Completed Stage 3 which executes the entire program by using doubly linked list(Timeline) which stores a snapshot of each executed line and each node holds the address of its previous and next node so we can see both ways. with the help of a few helper functions used to identify local variables and arithmetic operations during real time execution and tokenization functions that we used earlier to see that function header is valid eg a value cannot be assigned to a number only a variable, resolve.bin returns main address and we read the main address and call stack frame to push main. Using Patching from Stage 2 to handle offset values in call lines.
 
 The Final touch. from Dynamic to Static. Stage 4 saves the Dynamic memory allocation in RAM to a .ttdb file so that client can see any line/ snapshot without having to re-run the program. I used a few helper functions to make the writing of the snapshots easier as there re multiple layers of data involved. session. ttdb consists of a 20 byte header, all snapshots of varuable length, 1 by 1 and at the end all the indexes telling where the snaphots actually start
+
+
+Phase 02
+Added helper.h that includes all helper functions including the checksum functions, the trailer checker that compares the checksum on the reciever side(LoadBalancer). and helper socket functions that will be used to create a TCP connection
