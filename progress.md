@@ -18,3 +18,22 @@ Added helper.h that includes all helper functions including the checksum functio
 Made additional changes in server.cpp that were required. Implemented 4 new functions that used functions already implemented in phase 01. uses the functions in the helper to handle socket connection and checksum computation whilst communicating with loadbalancer
 
 Adding Loadbalancer.cpp that will act as the middle man between the client and the server. It only decides who is served and when. It operates two main loops. one where it accepts clients and queues them and one where it takes one client out of the queue and fully serves it
+
+Finished off by completing and adding the client file which is undoubtedly the most important to complete the architecture. its an interactive command prompt
+the start uses the network while jmp, next and prev are used on the downloaded file. There are a few documented error cases.
+
+Error case	      What happens
+Queue full	      Client gets server busy, try again later
+
+Server can’t   	  Client gets backend server failed to start
+start or connect
+
+Client waited     Socket closed, no reply
+too long in queue
+
+Upload checksum   Error sent to client (upload checksum mismatch)
+mismatch
+
+Reply checksum    Client deletes the file and reports checksum mismatch, response corrupted
+mismatch
+Bad .tdbg file	  Client reports server sent a damaged .tdbg file; old session kept
