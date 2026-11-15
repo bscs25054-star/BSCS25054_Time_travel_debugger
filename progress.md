@@ -16,3 +16,5 @@ Phase 02
 Added helper.h that includes all helper functions including the checksum functions, the trailer checker that compares the checksum on the reciever side(LoadBalancer). and helper socket functions that will be used to create a TCP connection
 
 Made additional changes in server.cpp that were required. Implemented 4 new functions that used functions already implemented in phase 01. uses the functions in the helper to handle socket connection and checksum computation whilst communicating with loadbalancer
+
+Adding Loadbalancer.cpp that will act as the middle man between the client and the server. It only decides who is served and when. It operates two main loops. one where it accepts clients and queues them and one where it takes one client out of the queue and fully serves it
